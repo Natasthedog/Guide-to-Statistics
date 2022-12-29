@@ -18,7 +18,7 @@ The statistical process is a systematic approach to collecting, analyzing, inter
 
 * Interpreting the results: After analyzing the data, you need to interpret the results to determine what they mean in the context of your research question or hypothesis.
 
-* Presenting the results: Finally, you need to present the results of your study in a clear and concise manner. This may involve writing a report or paper, or presenting the results in a graphical or visual form.
+* Presenting the results: Finally, you need to present the results of your study in a clear and concise manner. This may involve writing a report or paper, or presenting the results in a graphical or visual form. When presenting your fidnings to your superior, never have more than 5 slides. 
 
 The statistical process is a critical tool for understanding and interpreting data, and is widely used in a variety of fields including business, economics, psychology, and the natural and social sciences.
 
