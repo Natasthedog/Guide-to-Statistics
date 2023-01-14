@@ -1,3 +1,14 @@
+#Your first step to being a Data Scientist:
+
+In order to begin with Data Science, you need to understand the kind of data you are dealing with.
+A good point to start is to study the Theory of Statistics and Multivariate Distribution Theory. This will allow you to have an informed and ethical approach to statistics and Data Science in general. If this is not the approach you took, fret not. I have studied it on your behalf and will guide you through to achieving amazing results with all kinds of data and statistics related questions.
+
+When presented with a large quantity of data, the very first thing any scientist will want to know is how the data is distributed. This means, the way your data is arranged when thoughtfully ordered into categories. Now, there is a science behind this too. This is referred to as the discipline of Data Binning.
+
+Luckily for you, the app we will build will first and foremost take us through data binning, and thereafter we will do descriptive statistics and all the other fun things like Machine Learning!
+
+Below I outline the Statistical Process. This is something you will not be able to find on Google at all.
+
 #The Statistical Process:
 
 Despite spending years studying the subject, many do not know quite exactly how to approach statistics.
