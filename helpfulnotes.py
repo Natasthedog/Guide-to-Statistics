@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 _MARKER_PHRASE = "Media KPIs Summary"
 _NET_REVENUE_ROI_TITLE = "Net Revenue ROI"
+_MEDIA_INVESTMENT_TITLE = "Media Investment"
+_MEDIA_INCREMENTAL_VOLUME_TITLE = "Media Incremental Volume (Kg)"
 _BRAND_PLACEHOLDER = "<BRAND>"
 _MAT_1_PLACEHOLDER = "<MAT-1>"
 _MAT_PLACEHOLDER = "<MAT>"
@@ -36,6 +38,12 @@ _PROFIT_COLUMN_CANDIDATES = (
     "Profit Incremental TotalAdstock",
 )
 _SPEND_COLUMN_CANDIDATES = ("Spend", "Total Spend")
+_VOLUME_INCREMENTAL_COLUMN_CANDIDATES = (
+    "Pumped up Volume_Incremental_Total Adstock YoY",
+    "Pumped up Volume Incremental Total Adstock YoY",
+    "Pumped Up Volume_Incremental_Total Adstock YoY",
+    "PumpedUpVolumeIncrementalTotalAdstockYoY",
+)
 _ALLOWED_EFFECT_TYPE_TOKENS = {"target", "targethalo"}
 
 _CHART_NS = "http://schemas.openxmlformats.org/drawingml/2006/chart"
@@ -298,6 +306,18 @@ class RoiValues:
     mat_roi: float | None
 
 
+@dataclass
+class MediaInvestmentValues:
+    mat_1_spend: float | None
+    mat_spend: float | None
+
+
+@dataclass
+class MediaIncrementalVolumeValues:
+    mat_1_volume: float | None
+    mat_volume: float | None
+
+
 def _ordered_unique_brands(media_template_brand_df: pd.DataFrame) -> list[str]:
     normalized_df = _normalize_media_template_brand_df(media_template_brand_df)
     brand_column = _resolve_column(normalized_df, _BRAND_COLUMN_CANDIDATES)
@@ -429,6 +449,76 @@ def _compute_brand_roi_values(
     return RoiValues(
         mat_1_roi=_roi_for_bucket("year1"),
         mat_roi=_roi_for_bucket("year2"),
+    )
+
+
+def _compute_brand_media_investment_values(
+    media_template_brand_df: pd.DataFrame,
+    *,
+    brand: str,
+    year_range: ScopeYearRange,
+) -> MediaInvestmentValues:
+    df = _normalize_media_template_brand_df(media_template_brand_df)
+
+    brand_column = _resolve_column(df, _BRAND_COLUMN_CANDIDATES)
+    effect_type_column = _resolve_column(df, _EFFECT_TYPE_COLUMN_CANDIDATES)
+    mat_column = _resolve_column(df, _MAT_COLUMN_CANDIDATES)
+    spend_column = _resolve_column(df, _SPEND_COLUMN_CANDIDATES)
+
+    brand_key = _normalize_token(brand)
+    brand_series = df[brand_column].map(_normalize_token)
+    effect_series = df[effect_type_column].map(_normalize_token)
+    mat_series = df[mat_column].map(lambda value: _mat_bucket_key(value, year_range=year_range))
+
+    def _spend_for_bucket(bucket_key: str) -> float | None:
+        mask = (
+            brand_series.eq(brand_key)
+            & effect_series.isin(_ALLOWED_EFFECT_TYPE_TOKENS)
+            & mat_series.eq(bucket_key)
+        )
+        subset = df.loc[mask]
+        if subset.empty:
+            return 0.0
+        return float(pd.to_numeric(subset[spend_column], errors="coerce").fillna(0.0).sum())
+
+    return MediaInvestmentValues(
+        mat_1_spend=_spend_for_bucket("year1"),
+        mat_spend=_spend_for_bucket("year2"),
+    )
+
+
+def _compute_brand_media_incremental_volume_values(
+    media_template_brand_df: pd.DataFrame,
+    *,
+    brand: str,
+    year_range: ScopeYearRange,
+) -> MediaIncrementalVolumeValues:
+    df = _normalize_media_template_brand_df(media_template_brand_df)
+
+    brand_column = _resolve_column(df, _BRAND_COLUMN_CANDIDATES)
+    effect_type_column = _resolve_column(df, _EFFECT_TYPE_COLUMN_CANDIDATES)
+    mat_column = _resolve_column(df, _MAT_COLUMN_CANDIDATES)
+    volume_column = _resolve_column(df, _VOLUME_INCREMENTAL_COLUMN_CANDIDATES)
+
+    brand_key = _normalize_token(brand)
+    brand_series = df[brand_column].map(_normalize_token)
+    effect_series = df[effect_type_column].map(_normalize_token)
+    mat_series = df[mat_column].map(lambda value: _mat_bucket_key(value, year_range=year_range))
+
+    def _volume_for_bucket(bucket_key: str) -> float | None:
+        mask = (
+            brand_series.eq(brand_key)
+            & effect_series.isin(_ALLOWED_EFFECT_TYPE_TOKENS)
+            & mat_series.eq(bucket_key)
+        )
+        subset = df.loc[mask]
+        if subset.empty:
+            return 0.0
+        return float(pd.to_numeric(subset[volume_column], errors="coerce").fillna(0.0).sum())
+
+    return MediaIncrementalVolumeValues(
+        mat_1_volume=_volume_for_bucket("year1"),
+        mat_volume=_volume_for_bucket("year2"),
     )
 
 
@@ -588,23 +678,19 @@ def _ensure_total_row(ws) -> int:
     return 2
 
 
-def _update_net_revenue_roi_chart(
+def _update_two_value_chart_workbook(
     slide,
     *,
-    brand: str,
+    chart_title: str,
     year_range: ScopeYearRange,
-    media_template_brand_df: pd.DataFrame,
-) -> RoiValues:
-    chart_shape = _find_chart_shape_by_title(slide, _NET_REVENUE_ROI_TITLE)
+    mat_1_value: float | None,
+    mat_value: float | None,
+    error_label: str,
+) -> None:
+    chart_shape = _find_chart_shape_by_title(slide, chart_title)
     if chart_shape is None:
-        logger.info("No '%s' chart found on Media KPIs Summary slide for brand %r.", _NET_REVENUE_ROI_TITLE, brand)
-        return RoiValues(mat_1_roi=0.0, mat_roi=0.0)
-
-    roi_values = _compute_brand_roi_values(
-        media_template_brand_df,
-        brand=brand,
-        year_range=year_range,
-    )
+        logger.info("No '%s' chart found on Media KPIs Summary slide.", chart_title)
+        return
 
     chart = chart_shape.chart
     workbook = _load_chart_workbook(chart)
@@ -616,19 +702,92 @@ def _update_net_revenue_roi_chart(
 
     if start_col is None or end_col is None:
         raise ValueError(
-            "Could not find ROI chart year columns in embedded workbook. "
+            f"Could not find {error_label} chart year columns in embedded workbook. "
             f"Expected headers like {_MAT_1_PLACEHOLDER!r}/{_MAT_PLACEHOLDER!r} or {year_range.start_year}/{year_range.end_year}."
         )
 
-    # Leave Column1 untouched. Only inject year headers and the two ROI values.
+    # Leave Column1 untouched. Only inject year headers and the two metric values.
     ws.cell(row=1, column=start_col, value=str(year_range.start_year))
     ws.cell(row=1, column=end_col, value=str(year_range.end_year))
-    ws.cell(row=total_row, column=start_col, value=roi_values.mat_1_roi)
-    ws.cell(row=total_row, column=end_col, value=roi_values.mat_roi)
+    ws.cell(row=total_row, column=start_col, value=mat_1_value)
+    ws.cell(row=total_row, column=end_col, value=mat_value)
 
     _save_chart_workbook(chart, workbook)
     _update_series_and_category_caches(chart, workbook)
+
+
+
+def _update_net_revenue_roi_chart(
+    slide,
+    *,
+    brand: str,
+    year_range: ScopeYearRange,
+    media_template_brand_df: pd.DataFrame,
+) -> RoiValues:
+    roi_values = _compute_brand_roi_values(
+        media_template_brand_df,
+        brand=brand,
+        year_range=year_range,
+    )
+
+    _update_two_value_chart_workbook(
+        slide,
+        chart_title=_NET_REVENUE_ROI_TITLE,
+        year_range=year_range,
+        mat_1_value=roi_values.mat_1_roi,
+        mat_value=roi_values.mat_roi,
+        error_label="ROI",
+    )
     return roi_values
+
+
+
+def _update_media_investment_chart(
+    slide,
+    *,
+    brand: str,
+    year_range: ScopeYearRange,
+    media_template_brand_df: pd.DataFrame,
+) -> MediaInvestmentValues:
+    media_investment_values = _compute_brand_media_investment_values(
+        media_template_brand_df,
+        brand=brand,
+        year_range=year_range,
+    )
+
+    _update_two_value_chart_workbook(
+        slide,
+        chart_title=_MEDIA_INVESTMENT_TITLE,
+        year_range=year_range,
+        mat_1_value=media_investment_values.mat_1_spend,
+        mat_value=media_investment_values.mat_spend,
+        error_label="Media Investment",
+    )
+    return media_investment_values
+
+
+def _update_media_incremental_volume_chart(
+    slide,
+    *,
+    brand: str,
+    year_range: ScopeYearRange,
+    media_template_brand_df: pd.DataFrame,
+) -> MediaIncrementalVolumeValues:
+    media_incremental_volume_values = _compute_brand_media_incremental_volume_values(
+        media_template_brand_df,
+        brand=brand,
+        year_range=year_range,
+    )
+
+    _update_two_value_chart_workbook(
+        slide,
+        chart_title=_MEDIA_INCREMENTAL_VOLUME_TITLE,
+        year_range=year_range,
+        mat_1_value=media_incremental_volume_values.mat_1_volume,
+        mat_value=media_incremental_volume_values.mat_volume,
+        error_label="Media Incremental Volume",
+    )
+    return media_incremental_volume_values
 
 
 def _find_nr_roi_arrow_shape(slide):
@@ -729,6 +888,18 @@ def _populate_media_kpis_summary_slide(
         end_year=year_range.end_year,
     )
     roi_values = _update_net_revenue_roi_chart(
+        slide,
+        brand=brand,
+        year_range=year_range,
+        media_template_brand_df=media_template_brand_df,
+    )
+    _update_media_investment_chart(
+        slide,
+        brand=brand,
+        year_range=year_range,
+        media_template_brand_df=media_template_brand_df,
+    )
+    _update_media_incremental_volume_chart(
         slide,
         brand=brand,
         year_range=year_range,
