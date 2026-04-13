@@ -380,13 +380,22 @@ def _table_cell_box(table_shape, table, row_idx: int, col_idx: int):
     return left, top, width, height
 
 
-def _fit_shape_in_box(shape, left: int, top: int, width: int, height: int, *, padding_ratio: float = 0.12) -> None:
-    inner_width = max(1, int(width * (1.0 - (padding_ratio * 2))))
-    inner_height = max(1, int(height * (1.0 - (padding_ratio * 2))))
+def _fit_shape_in_box(
+    shape,
+    left: int,
+    top: int,
+    width: int,
+    height: int,
+    *,
+    target_width_ratio: float = 0.52,
+    target_height_ratio: float = 0.58,
+) -> None:
+    target_width = max(1, int(width * target_width_ratio))
+    target_height = max(1, int(height * target_height_ratio))
 
     orig_width = max(1, int(shape.width))
     orig_height = max(1, int(shape.height))
-    scale = min(inner_width / orig_width, inner_height / orig_height)
+    scale = min(target_width / orig_width, target_height / orig_height)
     new_width = max(1, int(orig_width * scale))
     new_height = max(1, int(orig_height * scale))
 
@@ -396,17 +405,22 @@ def _fit_shape_in_box(shape, left: int, top: int, width: int, height: int, *, pa
     shape.top = int(top + ((height - new_height) / 2))
 
 
-def _roi_status_symbol_name(row: ChannelBreakdownRow) -> str:
-    mat_1_roi = float(row.mat_1_roi or 0.0)
-    mat_roi = float(row.mat_roi or 0.0)
+def _rounded_roi_cents(value: float) -> int:
+    return int(round(float(value or 0.0) * 100))
 
-    if mat_1_roi == 0.0 and mat_roi > 0.0:
+
+def _roi_status_symbol_name(row: ChannelBreakdownRow) -> str:
+    mat_1_roi_cents = _rounded_roi_cents(row.mat_1_roi)
+    mat_roi_cents = _rounded_roi_cents(row.mat_roi)
+
+    if mat_1_roi_cents == 0 and mat_roi_cents > 0:
         return _NEW_SHAPE_NAME
 
-    delta = mat_roi - mat_1_roi
-    if abs(delta) <= _ROI_STATUS_EQUALITY_TOLERANCE:
+    tolerance_cents = int(round(_ROI_STATUS_EQUALITY_TOLERANCE * 100))
+    delta_cents = mat_roi_cents - mat_1_roi_cents
+    if abs(delta_cents) <= tolerance_cents:
         return _EQUAL_SHAPE_NAME
-    if delta > _ROI_STATUS_EQUALITY_TOLERANCE:
+    if delta_cents > tolerance_cents:
         return _GREEN_INCREASE_SHAPE_NAME
     return _PINK_DECREASE_SHAPE_NAME
 
