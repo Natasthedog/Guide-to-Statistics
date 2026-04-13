@@ -29,6 +29,9 @@ _BRAND_PLACEHOLDER = "<BRAND>"
 _MAT_1_PLACEHOLDER = "<MAT-1>"
 _MAT_PLACEHOLDER = "<MAT>"
 _NR_ROI_YOY_PLACEHOLDER = "<NR ROI YoY%>"
+_MED_INVESTMENT_YOY_PLACEHOLDER = "<MedInvYoY%>"
+_MEDIA_INCREMENTAL_VOLUME_YOY_PLACEHOLDER = "<MedIncrVolYoY%>"
+_NET_REVENUE_YOY_PLACEHOLDER = "<NetRevYoY%>"
 
 _BRAND_COLUMN_CANDIDATES = ("Brand", "Target Brand", "Brand Name")
 _EFFECT_TYPE_COLUMN_CANDIDATES = ("Effect Type", "EffectType")
@@ -56,6 +59,9 @@ _GRAY = RGBColor(127, 127, 127)
 _WHITE = RGBColor(255, 255, 255)
 
 _NR_ROI_TEXT_OVERLAY_NAME = "NR ROI YoY Overlay"
+_MED_INVESTMENT_TEXT_OVERLAY_NAME = "Media Investment YoY Overlay"
+_MEDIA_INCREMENTAL_VOLUME_TEXT_OVERLAY_NAME = "Media Incremental Volume YoY Overlay"
+_NET_REVENUE_TEXT_OVERLAY_NAME = "Net Revenue YoY Overlay"
 
 
 def _normalize_token(value: object) -> str:
@@ -856,17 +862,17 @@ def _update_media_incremental_volume_chart(
     return media_incremental_volume_values
 
 
-def _find_nr_roi_arrow_shape(slide):
+def _find_arrow_shape_with_placeholder(slide, placeholder: str):
     for shape in _iter_shapes_recursive(slide.shapes):
         if not getattr(shape, "has_text_frame", False):
             continue
         text_value = shape.text_frame.text or ""
-        if _NR_ROI_YOY_PLACEHOLDER in text_value:
+        if placeholder in text_value:
             return shape
     return None
 
 
-def _nr_roi_change_parts(previous_value: float, current_value: float) -> tuple[str, RGBColor, float, str]:
+def _metric_change_parts(previous_value: float, current_value: float) -> tuple[str, RGBColor, float, str]:
     previous_value = float(previous_value or 0.0)
     current_value = float(current_value or 0.0)
 
@@ -888,18 +894,26 @@ def _nr_roi_change_parts(previous_value: float, current_value: float) -> tuple[s
     return "=", _GRAY, 0.0, "flat"
 
 
-def _update_nr_roi_yoy_arrow(slide, *, mat_1_roi: float, mat_roi: float) -> None:
-    arrow_shape = _find_nr_roi_arrow_shape(slide)
+def _update_metric_yoy_arrow(
+    slide,
+    *,
+    placeholder: str,
+    overlay_name: str,
+    previous_value: float,
+    current_value: float,
+    metric_name: str,
+) -> None:
+    arrow_shape = _find_arrow_shape_with_placeholder(slide, placeholder)
     if arrow_shape is None:
-        logger.info("No NR ROI YoY arrow shape found on Media KPIs Summary slide.")
+        logger.info("No %s arrow shape found on Media KPIs Summary slide.", metric_name)
         return
 
-    _remove_named_shapes(slide, _NR_ROI_TEXT_OVERLAY_NAME)
-    change_text, change_rgb, arrow_rotation, direction = _nr_roi_change_parts(mat_1_roi, mat_roi)
+    _remove_named_shapes(slide, overlay_name)
+    change_text, change_rgb, arrow_rotation, direction = _metric_change_parts(previous_value, current_value)
 
     if direction == "flat":
         _remove_shape(arrow_shape)
-        _add_centered_text_overlay(slide, arrow_shape, "=", rgb=_GRAY)
+        _add_centered_text_overlay(slide, arrow_shape, "=", rgb=_GRAY, name=overlay_name)
         return
 
     try:
@@ -919,19 +933,15 @@ def _update_nr_roi_yoy_arrow(slide, *, mat_1_roi: float, mat_roi: float) -> None
         pass
 
     if direction == "down":
-        # Rotating the whole arrow shape also rotates its text, so keep the
-        # arrow geometry on the shape and render the % text as a separate
-        # transparent overlay in the same position.
         if getattr(arrow_shape, "has_text_frame", False):
             _set_shape_text_preserve_formatting(arrow_shape, "", rgb=_WHITE)
         try:
             arrow_shape.rotation = arrow_rotation
         except Exception:
             pass
-        _add_centered_text_overlay(slide, arrow_shape, change_text, rgb=_WHITE)
+        _add_centered_text_overlay(slide, arrow_shape, change_text, rgb=_WHITE, name=overlay_name)
         return
 
-    # Positive case: keep the original up-arrow and write text directly into it.
     if getattr(arrow_shape, "has_text_frame", False):
         _set_shape_text_preserve_formatting(arrow_shape, change_text, rgb=_WHITE)
 
@@ -939,6 +949,50 @@ def _update_nr_roi_yoy_arrow(slide, *, mat_1_roi: float, mat_roi: float) -> None
         arrow_shape.rotation = 0.0
     except Exception:
         pass
+
+
+def _update_nr_roi_yoy_arrow(slide, *, mat_1_roi: float, mat_roi: float) -> None:
+    _update_metric_yoy_arrow(
+        slide,
+        placeholder=_NR_ROI_YOY_PLACEHOLDER,
+        overlay_name=_NR_ROI_TEXT_OVERLAY_NAME,
+        previous_value=mat_1_roi,
+        current_value=mat_roi,
+        metric_name="NR ROI YoY",
+    )
+
+
+def _update_media_investment_yoy_arrow(slide, *, mat_1_spend: float, mat_spend: float) -> None:
+    _update_metric_yoy_arrow(
+        slide,
+        placeholder=_MED_INVESTMENT_YOY_PLACEHOLDER,
+        overlay_name=_MED_INVESTMENT_TEXT_OVERLAY_NAME,
+        previous_value=mat_1_spend,
+        current_value=mat_spend,
+        metric_name="Media Investment YoY",
+    )
+
+
+def _update_media_incremental_volume_yoy_arrow(slide, *, mat_1_volume: float, mat_volume: float) -> None:
+    _update_metric_yoy_arrow(
+        slide,
+        placeholder=_MEDIA_INCREMENTAL_VOLUME_YOY_PLACEHOLDER,
+        overlay_name=_MEDIA_INCREMENTAL_VOLUME_TEXT_OVERLAY_NAME,
+        previous_value=mat_1_volume,
+        current_value=mat_volume,
+        metric_name="Media Incremental Volume YoY",
+    )
+
+
+def _update_net_revenue_yoy_arrow(slide, *, mat_1_profit: float, mat_profit: float) -> None:
+    _update_metric_yoy_arrow(
+        slide,
+        placeholder=_NET_REVENUE_YOY_PLACEHOLDER,
+        overlay_name=_NET_REVENUE_TEXT_OVERLAY_NAME,
+        previous_value=mat_1_profit,
+        current_value=mat_profit,
+        metric_name="Net Revenue YoY",
+    )
 
 def _populate_media_kpis_summary_slide(
     slide,
@@ -959,19 +1013,19 @@ def _populate_media_kpis_summary_slide(
         year_range=year_range,
         media_template_brand_df=media_template_brand_df,
     )
-    _update_media_investment_chart(
+    media_investment_values = _update_media_investment_chart(
         slide,
         brand=brand,
         year_range=year_range,
         media_template_brand_df=media_template_brand_df,
     )
-    _update_net_revenue_chart(
+    net_revenue_values = _update_net_revenue_chart(
         slide,
         brand=brand,
         year_range=year_range,
         media_template_brand_df=media_template_brand_df,
     )
-    _update_media_incremental_volume_chart(
+    media_incremental_volume_values = _update_media_incremental_volume_chart(
         slide,
         brand=brand,
         year_range=year_range,
@@ -981,6 +1035,21 @@ def _populate_media_kpis_summary_slide(
         slide,
         mat_1_roi=float(roi_values.mat_1_roi or 0.0),
         mat_roi=float(roi_values.mat_roi or 0.0),
+    )
+    _update_media_investment_yoy_arrow(
+        slide,
+        mat_1_spend=float(media_investment_values.mat_1_spend or 0.0),
+        mat_spend=float(media_investment_values.mat_spend or 0.0),
+    )
+    _update_media_incremental_volume_yoy_arrow(
+        slide,
+        mat_1_volume=float(media_incremental_volume_values.mat_1_volume or 0.0),
+        mat_volume=float(media_incremental_volume_values.mat_volume or 0.0),
+    )
+    _update_net_revenue_yoy_arrow(
+        slide,
+        mat_1_profit=float(net_revenue_values.mat_1_profit or 0.0),
+        mat_profit=float(net_revenue_values.mat_profit or 0.0),
     )
 
 
