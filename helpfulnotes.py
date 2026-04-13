@@ -222,7 +222,7 @@ def _ensure_breakdown_table_data_row_count(table, *, needed_data_rows: int, head
 
 
 def _format_roi(value: float) -> str:
-    return f"{float(value or 0.0):.2f}"
+    return f"€{float(value or 0.0):.2f}"
 
 
 def _format_spend_thousands(value: float) -> str:
