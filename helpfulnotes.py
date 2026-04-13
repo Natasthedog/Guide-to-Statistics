@@ -11,7 +11,6 @@ from openpyxl import load_workbook
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE_TYPE
-from pptx.enum.shapes import MSO_AUTO_SHAPE_TYPE
 from pptx.util import Pt
 
 from deck.engine.time_period import CompanyWeekMapper, _coerce_yearwk, _find_company_week_value
@@ -883,41 +882,15 @@ def _arrow_rotation_value(shape, default: float = 0.0) -> float:
         return float(default)
 
 
-def _arrow_auto_shape_name(shape) -> str:
-    try:
-        auto_shape_type = getattr(shape, "auto_shape_type", None)
-        if auto_shape_type is None:
-            return ""
-        name = getattr(auto_shape_type, "name", None)
-        if name:
-            return str(name).strip().upper()
-        return str(auto_shape_type).split(".")[-1].strip().upper()
-    except Exception:
-        return ""
+def _template_rotation_for_arrow(shape, default: float = 0.0) -> float:
+    """Return the arrow's current template rotation unchanged.
 
-
-def _positive_up_rotation_for_arrow(shape, fallback_up_rotation: float = 0.0) -> float:
-    current_rotation = _arrow_rotation_value(shape, fallback_up_rotation)
-    shape_name = _arrow_auto_shape_name(shape)
-
-    right_pointing_defaults = {
-        "RIGHT_ARROW",
-        "RIGHT_ARROW_CALLOUT",
-        "NOTCHED_RIGHT_ARROW",
-        "STRIPED_RIGHT_ARROW",
-    }
-    up_pointing_defaults = {
-        "UP_ARROW",
-        "UP_ARROW_CALLOUT",
-        "BENT_UP_ARROW",
-        "CURVED_UP_ARROW",
-    }
-
-    if shape_name in right_pointing_defaults:
-        return (current_rotation - 90.0) % 360.0
-    if shape_name in up_pointing_defaults:
-        return current_rotation % 360.0
-    return float(fallback_up_rotation) % 360.0
+    The user confirmed all KPI arrows point upward in the template by default,
+    so the safest approach is to preserve each arrow's own baseline rotation for
+    the positive case and only flip that exact shape by 180 degrees for the
+    negative case.
+    """
+    return _arrow_rotation_value(shape, default)
 
 
 def _metric_change_parts(previous_value: float, current_value: float) -> tuple[str, RGBColor, str]:
@@ -950,16 +923,15 @@ def _update_metric_yoy_arrow(
     previous_value: float,
     current_value: float,
     metric_name: str,
-    up_rotation: float,
 ) -> None:
     arrow_shape = _find_arrow_shape_with_placeholder(slide, placeholder)
     if arrow_shape is None:
         logger.info("No %s arrow shape found on Media KPIs Summary slide.", metric_name)
         return
 
+    template_rotation = _template_rotation_for_arrow(arrow_shape, 0.0)
     _remove_named_shapes(slide, overlay_name)
     change_text, change_rgb, direction = _metric_change_parts(previous_value, current_value)
-    positive_rotation = _positive_up_rotation_for_arrow(arrow_shape, fallback_up_rotation=up_rotation)
 
     if direction == "flat":
         _remove_shape(arrow_shape)
@@ -986,7 +958,7 @@ def _update_metric_yoy_arrow(
         if getattr(arrow_shape, "has_text_frame", False):
             _set_shape_text_preserve_formatting(arrow_shape, "", rgb=_WHITE)
         try:
-            arrow_shape.rotation = (float(positive_rotation) + 180.0) % 360.0
+            arrow_shape.rotation = (float(template_rotation) + 180.0) % 360.0
         except Exception:
             pass
         _add_centered_text_overlay(slide, arrow_shape, change_text, rgb=_WHITE, name=overlay_name)
@@ -996,19 +968,13 @@ def _update_metric_yoy_arrow(
         _set_shape_text_preserve_formatting(arrow_shape, change_text, rgb=_WHITE)
 
     try:
-        arrow_shape.rotation = float(positive_rotation)
+        arrow_shape.rotation = float(template_rotation)
     except Exception:
         pass
 
 
-def _kpi_up_arrow_rotation(slide) -> float:
-    reference_arrow = _find_arrow_shape_with_placeholder(slide, _NR_ROI_YOY_PLACEHOLDER)
-    if reference_arrow is None:
-        return 0.0
-    return _arrow_rotation_value(reference_arrow, 0.0)
 
-
-def _update_nr_roi_yoy_arrow(slide, *, mat_1_roi: float, mat_roi: float, up_rotation: float) -> None:
+def _update_nr_roi_yoy_arrow(slide, *, mat_1_roi: float, mat_roi: float) -> None:
     _update_metric_yoy_arrow(
         slide,
         placeholder=_NR_ROI_YOY_PLACEHOLDER,
@@ -1016,11 +982,10 @@ def _update_nr_roi_yoy_arrow(slide, *, mat_1_roi: float, mat_roi: float, up_rota
         previous_value=mat_1_roi,
         current_value=mat_roi,
         metric_name="NR ROI YoY",
-        up_rotation=up_rotation,
     )
 
 
-def _update_media_investment_yoy_arrow(slide, *, mat_1_spend: float, mat_spend: float, up_rotation: float) -> None:
+def _update_media_investment_yoy_arrow(slide, *, mat_1_spend: float, mat_spend: float) -> None:
     _update_metric_yoy_arrow(
         slide,
         placeholder=_MED_INVESTMENT_YOY_PLACEHOLDER,
@@ -1028,11 +993,10 @@ def _update_media_investment_yoy_arrow(slide, *, mat_1_spend: float, mat_spend: 
         previous_value=mat_1_spend,
         current_value=mat_spend,
         metric_name="Media Investment YoY",
-        up_rotation=up_rotation,
     )
 
 
-def _update_media_incremental_volume_yoy_arrow(slide, *, mat_1_volume: float, mat_volume: float, up_rotation: float) -> None:
+def _update_media_incremental_volume_yoy_arrow(slide, *, mat_1_volume: float, mat_volume: float) -> None:
     _update_metric_yoy_arrow(
         slide,
         placeholder=_MEDIA_INCREMENTAL_VOLUME_YOY_PLACEHOLDER,
@@ -1040,11 +1004,10 @@ def _update_media_incremental_volume_yoy_arrow(slide, *, mat_1_volume: float, ma
         previous_value=mat_1_volume,
         current_value=mat_volume,
         metric_name="Media Incremental Volume YoY",
-        up_rotation=up_rotation,
     )
 
 
-def _update_net_revenue_yoy_arrow(slide, *, mat_1_profit: float, mat_profit: float, up_rotation: float) -> None:
+def _update_net_revenue_yoy_arrow(slide, *, mat_1_profit: float, mat_profit: float) -> None:
     _update_metric_yoy_arrow(
         slide,
         placeholder=_NET_REVENUE_YOY_PLACEHOLDER,
@@ -1052,7 +1015,6 @@ def _update_net_revenue_yoy_arrow(slide, *, mat_1_profit: float, mat_profit: flo
         previous_value=mat_1_profit,
         current_value=mat_profit,
         metric_name="Net Revenue YoY",
-        up_rotation=up_rotation,
     )
 
 def _populate_media_kpis_summary_slide(
@@ -1092,30 +1054,25 @@ def _populate_media_kpis_summary_slide(
         year_range=year_range,
         media_template_brand_df=media_template_brand_df,
     )
-    up_arrow_rotation = _kpi_up_arrow_rotation(slide)
     _update_nr_roi_yoy_arrow(
         slide,
         mat_1_roi=float(roi_values.mat_1_roi or 0.0),
         mat_roi=float(roi_values.mat_roi or 0.0),
-        up_rotation=up_arrow_rotation,
     )
     _update_media_investment_yoy_arrow(
         slide,
         mat_1_spend=float(media_investment_values.mat_1_spend or 0.0),
         mat_spend=float(media_investment_values.mat_spend or 0.0),
-        up_rotation=up_arrow_rotation,
     )
     _update_media_incremental_volume_yoy_arrow(
         slide,
         mat_1_volume=float(media_incremental_volume_values.mat_1_volume or 0.0),
         mat_volume=float(media_incremental_volume_values.mat_volume or 0.0),
-        up_rotation=up_arrow_rotation,
     )
     _update_net_revenue_yoy_arrow(
         slide,
         mat_1_profit=float(net_revenue_values.mat_1_profit or 0.0),
         mat_profit=float(net_revenue_values.mat_profit or 0.0),
-        up_rotation=up_arrow_rotation,
     )
 
 
