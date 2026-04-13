@@ -1,17 +1,35 @@
 from __future__ import annotations
 
+import logging
+
 import pandas as pd
 from pptx import Presentation
 
 from deck.engine.pptx.text import _replace_placeholders_in_slide_runs
 
-from .media_kpis_summary_service_layer import _iter_shapes_recursive, _ordered_unique_brands, _resolve_scope_year_range
+from .media_kpis_summary_service_layer import (
+    _NET_REVENUE_ROI_TITLE,
+    _compute_brand_roi_values,
+    _ensure_total_row,
+    _find_chart_shape_by_title,
+    _find_workbook_header_column,
+    _iter_shapes_recursive,
+    _load_chart_workbook,
+    _ordered_unique_brands,
+    _resolve_scope_year_range,
+    _save_chart_workbook,
+    _update_series_and_category_caches,
+)
 from .waterfall_service_layer import WaterfallSlideMapper
+
+logger = logging.getLogger(__name__)
 
 _MARKER_PHRASE = "Net Revenue ROI Breakdown"
 _BRAND_PLACEHOLDER = "<BRAND>"
 _MAT_1_PLACEHOLDER = "<MAT-1>"
 _MAT_PLACEHOLDER = "<MAT>"
+_TOTAL_MAT_1_PLACEHOLDER = "Total <MAT-1>"
+_TOTAL_MAT_PLACEHOLDER = "Total <MAT>"
 
 
 def _normalize_token(value: object) -> str:
@@ -45,6 +63,80 @@ def _apply_net_revenue_roi_breakdown_placeholders(slide, *, brand: str, start_ye
     return _replace_placeholders_in_slide_runs(slide, replacements)
 
 
+def _update_net_revenue_roi_breakdown_chart(
+    slide,
+    *,
+    brand: str,
+    year_range,
+    media_template_brand_df: pd.DataFrame,
+) -> None:
+    chart_shape = _find_chart_shape_by_title(slide, _NET_REVENUE_ROI_TITLE)
+    if chart_shape is None:
+        logger.info(
+            "No '%s' chart found on Net Revenue ROI Breakdown slide for brand %r.",
+            _NET_REVENUE_ROI_TITLE,
+            brand,
+        )
+        return
+
+    roi_values = _compute_brand_roi_values(
+        media_template_brand_df,
+        brand=brand,
+        year_range=year_range,
+    )
+
+    chart = chart_shape.chart
+    workbook = _load_chart_workbook(chart)
+    ws = workbook.active
+
+    start_col = _find_workbook_header_column(
+        ws,
+        (_TOTAL_MAT_1_PLACEHOLDER, _MAT_1_PLACEHOLDER, str(year_range.start_year)),
+    )
+    end_col = _find_workbook_header_column(
+        ws,
+        (_TOTAL_MAT_PLACEHOLDER, _MAT_PLACEHOLDER, str(year_range.end_year)),
+    )
+    total_row = _ensure_total_row(ws)
+
+    if start_col is None or end_col is None:
+        raise ValueError(
+            "Could not find Net Revenue ROI Breakdown chart year columns in embedded workbook. "
+            f"Expected headers like {_TOTAL_MAT_1_PLACEHOLDER!r}/{_TOTAL_MAT_PLACEHOLDER!r} "
+            f"or {_MAT_1_PLACEHOLDER!r}/{_MAT_PLACEHOLDER!r}."
+        )
+
+    # Leave Column1 untouched. Only inject the year headers and the two total ROI values.
+    ws.cell(row=1, column=start_col, value=str(year_range.start_year))
+    ws.cell(row=1, column=end_col, value=str(year_range.end_year))
+    ws.cell(row=total_row, column=start_col, value=roi_values.mat_1_roi)
+    ws.cell(row=total_row, column=end_col, value=roi_values.mat_roi)
+
+    _save_chart_workbook(chart, workbook)
+    _update_series_and_category_caches(chart, workbook)
+
+
+def _populate_net_revenue_roi_breakdown_slide(
+    slide,
+    *,
+    brand: str,
+    year_range,
+    media_template_brand_df: pd.DataFrame,
+) -> None:
+    _apply_net_revenue_roi_breakdown_placeholders(
+        slide,
+        brand=brand,
+        start_year=year_range.start_year,
+        end_year=year_range.end_year,
+    )
+    _update_net_revenue_roi_breakdown_chart(
+        slide,
+        brand=brand,
+        year_range=year_range,
+        media_template_brand_df=media_template_brand_df,
+    )
+
+
 def populate_net_revenue_roi_breakdown_slides(
     prs: Presentation,
     *,
@@ -62,11 +154,11 @@ def populate_net_revenue_roi_breakdown_slides(
     year_range = _resolve_scope_year_range(scope_df)
 
     if len(brands) == 1:
-        _apply_net_revenue_roi_breakdown_placeholders(
+        _populate_net_revenue_roi_breakdown_slide(
             template_slide,
             brand=brands[0],
-            start_year=year_range.start_year,
-            end_year=year_range.end_year,
+            year_range=year_range,
+            media_template_brand_df=media_template_brand_df,
         )
         return
 
@@ -75,11 +167,11 @@ def populate_net_revenue_roi_breakdown_slides(
 
     for idx, brand in enumerate(brands):
         slide = slide_mapper.duplicate_slide(prs, template_slide, insert_idx=template_idx + idx + 1)
-        _apply_net_revenue_roi_breakdown_placeholders(
+        _populate_net_revenue_roi_breakdown_slide(
             slide,
             brand=brand,
-            start_year=year_range.start_year,
-            end_year=year_range.end_year,
+            year_range=year_range,
+            media_template_brand_df=media_template_brand_df,
         )
 
     slide_mapper.delete_slide(prs, template_slide)
