@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 from deck.engine.pptx.text import _replace_placeholders_in_slide_runs
 
@@ -38,6 +39,7 @@ from .waterfall_service_layer import WaterfallSlideMapper
 logger = logging.getLogger(__name__)
 
 _MARKER_PHRASE = "Net Revenue ROI Breakdown"
+_ARROW_UTILITIES_MARKER = "<Arrow Utilities>"
 _BRAND_PLACEHOLDER = "<BRAND>"
 _MAT_1_PLACEHOLDER = "<MAT-1>"
 _MAT_PLACEHOLDER = "<MAT>"
@@ -51,6 +53,17 @@ _CHANNEL_COLUMN_CANDIDATES = (
     "Media Channel",
     "Channel Name",
 )
+
+_GREEN_INCREASE_SHAPE_NAME = "ROIStatus_GreenIncreaseArrow"
+_PINK_DECREASE_SHAPE_NAME = "ROIStatus_PinkDecreaseArrow"
+_NEW_SHAPE_NAME = "ROIStatus_NewSymbol"
+_EQUAL_SHAPE_NAME = "ROIStatus_EqualSymbol"
+
+_ROI_STATUS_EQUALITY_TOLERANCE = 0.01
+_HEADER_ROW_COUNT = 2
+_TABLE_COLUMN_COUNT = 8
+# Channel | MAT-1 ROI | Spend | Budget % | ROI Status | MAT ROI | Spend | Budget %
+_ROI_STATUS_COL_IDX = 4
 
 
 def _normalize_token(value: object) -> str:
@@ -80,6 +93,20 @@ def _find_net_revenue_roi_breakdown_template_slide(prs: Presentation):
                 continue
             text_value = shape.text_frame.text or ""
             if marker in text_value:
+                return slide
+            if marker_norm and marker_norm in _normalize_token(text_value):
+                return slide
+    return None
+
+
+def _find_arrow_utilities_slide(prs: Presentation):
+    marker_norm = _normalize_token(_ARROW_UTILITIES_MARKER)
+    for slide in prs.slides:
+        for shape in _iter_shapes_recursive(slide.shapes):
+            if not getattr(shape, "has_text_frame", False):
+                continue
+            text_value = shape.text_frame.text or ""
+            if _ARROW_UTILITIES_MARKER in text_value:
                 return slide
             if marker_norm and marker_norm in _normalize_token(text_value):
                 return slide
@@ -152,28 +179,28 @@ def _update_net_revenue_roi_breakdown_chart(
     return roi_values
 
 
-def _find_breakdown_table_on_slide(slide):
+def _find_breakdown_table_shape_and_table(slide):
     candidates = []
     for shape in _iter_shapes_recursive(slide.shapes):
         if not getattr(shape, "has_table", False):
             continue
         table = shape.table
-        candidates.append(table)
+        candidates.append((shape, table))
 
     if not candidates:
-        return None
+        return None, None
 
-    for table in candidates:
+    for shape, table in candidates:
         try:
-            if len(table.columns) == 7 and len(table.rows) >= 3:
-                return table
+            if len(table.columns) == _TABLE_COLUMN_COUNT and len(table.rows) >= _HEADER_ROW_COUNT + 1:
+                return shape, table
         except Exception:
             continue
 
-    for table in candidates:
+    for shape, table in candidates:
         try:
-            if len(table.columns) >= 7:
-                return table
+            if len(table.columns) >= _TABLE_COLUMN_COUNT:
+                return shape, table
         except Exception:
             continue
 
@@ -202,7 +229,11 @@ def _set_cell_text_preserve_formatting(cell, text: str) -> None:
             extra_run.text = ""
 
 
-def _ensure_breakdown_table_data_row_count(table, *, needed_data_rows: int, header_rows: int = 2) -> None:
+def _clear_cell_text(cell) -> None:
+    _set_cell_text_preserve_formatting(cell, "")
+
+
+def _ensure_breakdown_table_data_row_count(table, *, needed_data_rows: int, header_rows: int = _HEADER_ROW_COUNT) -> None:
     tbl = table._tbl
     current_rows = len(table.rows)
 
@@ -323,15 +354,109 @@ def _compute_brand_channel_breakdown_rows(
     return rows
 
 
+def _find_named_utility_shape(slide, shape_name: str):
+    target = _normalize_token(shape_name)
+    for shape in _iter_shapes_recursive(slide.shapes):
+        if _normalize_token(getattr(shape, 'name', '')) == target:
+            return shape
+    return None
+
+
+def _copy_shape_to_slide(slide, source_shape):
+    newel = deepcopy(source_shape._element)
+    slide.shapes._spTree.insert_element_before(newel, 'p:extLst')
+    return slide.shapes[-1]
+
+
+def _table_cell_box(table_shape, table, row_idx: int, col_idx: int):
+    left = int(table_shape.left)
+    top = int(table_shape.top)
+    for idx in range(col_idx):
+        left += int(table.columns[idx].width)
+    for idx in range(row_idx):
+        top += int(table.rows[idx].height)
+    width = int(table.columns[col_idx].width)
+    height = int(table.rows[row_idx].height)
+    return left, top, width, height
+
+
+def _fit_shape_in_box(shape, left: int, top: int, width: int, height: int, *, padding_ratio: float = 0.12) -> None:
+    inner_width = max(1, int(width * (1.0 - (padding_ratio * 2))))
+    inner_height = max(1, int(height * (1.0 - (padding_ratio * 2))))
+
+    orig_width = max(1, int(shape.width))
+    orig_height = max(1, int(shape.height))
+    scale = min(inner_width / orig_width, inner_height / orig_height)
+    new_width = max(1, int(orig_width * scale))
+    new_height = max(1, int(orig_height * scale))
+
+    shape.width = new_width
+    shape.height = new_height
+    shape.left = int(left + ((width - new_width) / 2))
+    shape.top = int(top + ((height - new_height) / 2))
+
+
+def _roi_status_symbol_name(row: ChannelBreakdownRow) -> str:
+    mat_1_roi = float(row.mat_1_roi or 0.0)
+    mat_roi = float(row.mat_roi or 0.0)
+
+    if mat_1_roi == 0.0 and mat_roi > 0.0:
+        return _NEW_SHAPE_NAME
+
+    delta = mat_roi - mat_1_roi
+    if abs(delta) <= _ROI_STATUS_EQUALITY_TOLERANCE:
+        return _EQUAL_SHAPE_NAME
+    if delta > _ROI_STATUS_EQUALITY_TOLERANCE:
+        return _GREEN_INCREASE_SHAPE_NAME
+    return _PINK_DECREASE_SHAPE_NAME
+
+
+def _apply_roi_status_symbols(
+    slide,
+    *,
+    utility_slide,
+    table_shape,
+    table,
+    rows: list[ChannelBreakdownRow],
+) -> None:
+    if utility_slide is None:
+        logger.info('No <Arrow Utilities> slide found; skipping ROI Status symbols.')
+        return
+
+    prototypes = {
+        _GREEN_INCREASE_SHAPE_NAME: _find_named_utility_shape(utility_slide, _GREEN_INCREASE_SHAPE_NAME),
+        _PINK_DECREASE_SHAPE_NAME: _find_named_utility_shape(utility_slide, _PINK_DECREASE_SHAPE_NAME),
+        _NEW_SHAPE_NAME: _find_named_utility_shape(utility_slide, _NEW_SHAPE_NAME),
+        _EQUAL_SHAPE_NAME: _find_named_utility_shape(utility_slide, _EQUAL_SHAPE_NAME),
+    }
+
+    missing = [name for name, shape in prototypes.items() if shape is None]
+    if missing:
+        raise ValueError(
+            'Could not find ROI Status utility shape(s) on <Arrow Utilities> slide: ' + ', '.join(missing)
+        )
+
+    for idx, row in enumerate(rows, start=_HEADER_ROW_COUNT):
+        symbol_name = _roi_status_symbol_name(row)
+        source_shape = prototypes.get(symbol_name)
+        if source_shape is None:
+            continue
+        _clear_cell_text(table.cell(idx, _ROI_STATUS_COL_IDX))
+        clone = _copy_shape_to_slide(slide, source_shape)
+        left, top, width, height = _table_cell_box(table_shape, table, idx, _ROI_STATUS_COL_IDX)
+        _fit_shape_in_box(clone, left, top, width, height)
+
+
 def _update_net_revenue_roi_breakdown_table(
     slide,
     *,
+    utility_slide,
     brand: str,
     year_range,
     media_template_brand_df: pd.DataFrame,
 ) -> None:
-    table = _find_breakdown_table_on_slide(slide)
-    if table is None:
+    table_shape, table = _find_breakdown_table_shape_and_table(slide)
+    if table is None or table_shape is None:
         logger.info("No Net Revenue ROI Breakdown table found on slide for brand %r.", brand)
         return
 
@@ -341,25 +466,35 @@ def _update_net_revenue_roi_breakdown_table(
         year_range=year_range,
     )
 
-    _ensure_breakdown_table_data_row_count(table, needed_data_rows=len(rows), header_rows=2)
+    _ensure_breakdown_table_data_row_count(table, needed_data_rows=len(rows), header_rows=_HEADER_ROW_COUNT)
 
-    if len(table.rows) >= 1 and len(table.columns) >= 5:
+    if len(table.rows) >= 1 and len(table.columns) >= 6:
         _set_cell_text_preserve_formatting(table.cell(0, 1), str(year_range.start_year))
-        _set_cell_text_preserve_formatting(table.cell(0, 4), str(year_range.end_year))
+        _set_cell_text_preserve_formatting(table.cell(0, 5), str(year_range.end_year))
 
-    for idx, row in enumerate(rows, start=2):
+    for idx, row in enumerate(rows, start=_HEADER_ROW_COUNT):
         _set_cell_text_preserve_formatting(table.cell(idx, 0), row.channel)
         _set_cell_text_preserve_formatting(table.cell(idx, 1), _format_roi(row.mat_1_roi))
         _set_cell_text_preserve_formatting(table.cell(idx, 2), _format_spend_thousands(row.mat_1_spend))
         _set_cell_text_preserve_formatting(table.cell(idx, 3), _format_budget_pct(row.mat_1_budget_pct))
-        _set_cell_text_preserve_formatting(table.cell(idx, 4), _format_roi(row.mat_roi))
-        _set_cell_text_preserve_formatting(table.cell(idx, 5), _format_spend_thousands(row.mat_spend))
-        _set_cell_text_preserve_formatting(table.cell(idx, 6), _format_budget_pct(row.mat_budget_pct))
+        _clear_cell_text(table.cell(idx, _ROI_STATUS_COL_IDX))
+        _set_cell_text_preserve_formatting(table.cell(idx, 5), _format_roi(row.mat_roi))
+        _set_cell_text_preserve_formatting(table.cell(idx, 6), _format_spend_thousands(row.mat_spend))
+        _set_cell_text_preserve_formatting(table.cell(idx, 7), _format_budget_pct(row.mat_budget_pct))
+
+    _apply_roi_status_symbols(
+        slide,
+        utility_slide=utility_slide,
+        table_shape=table_shape,
+        table=table,
+        rows=rows,
+    )
 
 
 def _populate_net_revenue_roi_breakdown_slide(
     slide,
     *,
+    utility_slide,
     brand: str,
     year_range,
     media_template_brand_df: pd.DataFrame,
@@ -383,6 +518,7 @@ def _populate_net_revenue_roi_breakdown_slide(
     )
     _update_net_revenue_roi_breakdown_table(
         slide,
+        utility_slide=utility_slide,
         brand=brand,
         year_range=year_range,
         media_template_brand_df=media_template_brand_df,
@@ -399,6 +535,8 @@ def populate_net_revenue_roi_breakdown_slides(
     if template_slide is None:
         return
 
+    utility_slide = _find_arrow_utilities_slide(prs)
+
     normalized_media_template_brand_df = _normalize_media_template_brand_df(media_template_brand_df)
     brands = _ordered_unique_brands(normalized_media_template_brand_df)
     if not brands:
@@ -406,25 +544,32 @@ def populate_net_revenue_roi_breakdown_slides(
 
     year_range = _resolve_scope_year_range(scope_df)
 
+    slide_mapper = WaterfallSlideMapper()
+
     if len(brands) == 1:
         _populate_net_revenue_roi_breakdown_slide(
             template_slide,
+            utility_slide=utility_slide,
             brand=brands[0],
             year_range=year_range,
             media_template_brand_df=normalized_media_template_brand_df,
         )
+        if utility_slide is not None and utility_slide != template_slide:
+            slide_mapper.delete_slide(prs, utility_slide)
         return
 
-    slide_mapper = WaterfallSlideMapper()
     template_idx = list(prs.slides).index(template_slide)
 
     for idx, brand in enumerate(brands):
         slide = slide_mapper.duplicate_slide(prs, template_slide, insert_idx=template_idx + idx + 1)
         _populate_net_revenue_roi_breakdown_slide(
             slide,
+            utility_slide=utility_slide,
             brand=brand,
             year_range=year_range,
             media_template_brand_df=normalized_media_template_brand_df,
         )
 
     slide_mapper.delete_slide(prs, template_slide)
+    if utility_slide is not None:
+        slide_mapper.delete_slide(prs, utility_slide)
