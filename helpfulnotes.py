@@ -11,6 +11,7 @@ from openpyxl import load_workbook
 from pptx import Presentation
 from pptx.dml.color import RGBColor
 from pptx.enum.shapes import MSO_SHAPE_TYPE
+from pptx.enum.shapes import MSO_AUTO_SHAPE_TYPE
 from pptx.util import Pt
 
 from deck.engine.time_period import CompanyWeekMapper, _coerce_yearwk, _find_company_week_value
@@ -882,6 +883,43 @@ def _arrow_rotation_value(shape, default: float = 0.0) -> float:
         return float(default)
 
 
+def _arrow_auto_shape_name(shape) -> str:
+    try:
+        auto_shape_type = getattr(shape, "auto_shape_type", None)
+        if auto_shape_type is None:
+            return ""
+        name = getattr(auto_shape_type, "name", None)
+        if name:
+            return str(name).strip().upper()
+        return str(auto_shape_type).split(".")[-1].strip().upper()
+    except Exception:
+        return ""
+
+
+def _positive_up_rotation_for_arrow(shape, fallback_up_rotation: float = 0.0) -> float:
+    current_rotation = _arrow_rotation_value(shape, fallback_up_rotation)
+    shape_name = _arrow_auto_shape_name(shape)
+
+    right_pointing_defaults = {
+        "RIGHT_ARROW",
+        "RIGHT_ARROW_CALLOUT",
+        "NOTCHED_RIGHT_ARROW",
+        "STRIPED_RIGHT_ARROW",
+    }
+    up_pointing_defaults = {
+        "UP_ARROW",
+        "UP_ARROW_CALLOUT",
+        "BENT_UP_ARROW",
+        "CURVED_UP_ARROW",
+    }
+
+    if shape_name in right_pointing_defaults:
+        return (current_rotation - 90.0) % 360.0
+    if shape_name in up_pointing_defaults:
+        return current_rotation % 360.0
+    return float(fallback_up_rotation) % 360.0
+
+
 def _metric_change_parts(previous_value: float, current_value: float) -> tuple[str, RGBColor, str]:
     previous_value = float(previous_value or 0.0)
     current_value = float(current_value or 0.0)
@@ -921,6 +959,7 @@ def _update_metric_yoy_arrow(
 
     _remove_named_shapes(slide, overlay_name)
     change_text, change_rgb, direction = _metric_change_parts(previous_value, current_value)
+    positive_rotation = _positive_up_rotation_for_arrow(arrow_shape, fallback_up_rotation=up_rotation)
 
     if direction == "flat":
         _remove_shape(arrow_shape)
@@ -947,7 +986,7 @@ def _update_metric_yoy_arrow(
         if getattr(arrow_shape, "has_text_frame", False):
             _set_shape_text_preserve_formatting(arrow_shape, "", rgb=_WHITE)
         try:
-            arrow_shape.rotation = (float(up_rotation) + 180.0) % 360.0
+            arrow_shape.rotation = (float(positive_rotation) + 180.0) % 360.0
         except Exception:
             pass
         _add_centered_text_overlay(slide, arrow_shape, change_text, rgb=_WHITE, name=overlay_name)
@@ -957,7 +996,7 @@ def _update_metric_yoy_arrow(
         _set_shape_text_preserve_formatting(arrow_shape, change_text, rgb=_WHITE)
 
     try:
-        arrow_shape.rotation = float(up_rotation)
+        arrow_shape.rotation = float(positive_rotation)
     except Exception:
         pass
 
