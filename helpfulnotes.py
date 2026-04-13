@@ -18,6 +18,7 @@ from .media_kpis_summary_service_layer import (
     _ordered_unique_brands,
     _resolve_scope_year_range,
     _save_chart_workbook,
+    _update_nr_roi_yoy_arrow,
     _update_series_and_category_caches,
 )
 from .waterfall_service_layer import WaterfallSlideMapper
@@ -69,7 +70,7 @@ def _update_net_revenue_roi_breakdown_chart(
     brand: str,
     year_range,
     media_template_brand_df: pd.DataFrame,
-) -> None:
+):
     chart_shape = _find_chart_shape_by_title(slide, _NET_REVENUE_ROI_TITLE)
     if chart_shape is None:
         logger.info(
@@ -77,7 +78,11 @@ def _update_net_revenue_roi_breakdown_chart(
             _NET_REVENUE_ROI_TITLE,
             brand,
         )
-        return
+        return _compute_brand_roi_values(
+            media_template_brand_df,
+            brand=brand,
+            year_range=year_range,
+        )
 
     roi_values = _compute_brand_roi_values(
         media_template_brand_df,
@@ -91,11 +96,11 @@ def _update_net_revenue_roi_breakdown_chart(
 
     start_col = _find_workbook_header_column(
         ws,
-        (_TOTAL_MAT_1_PLACEHOLDER, _MAT_1_PLACEHOLDER, str(year_range.start_year)),
+        (_TOTAL_MAT_1_PLACEHOLDER, _MAT_1_PLACEHOLDER, f"Total {year_range.start_year}", str(year_range.start_year)),
     )
     end_col = _find_workbook_header_column(
         ws,
-        (_TOTAL_MAT_PLACEHOLDER, _MAT_PLACEHOLDER, str(year_range.end_year)),
+        (_TOTAL_MAT_PLACEHOLDER, _MAT_PLACEHOLDER, f"Total {year_range.end_year}", str(year_range.end_year)),
     )
     total_row = _ensure_total_row(ws)
 
@@ -106,14 +111,15 @@ def _update_net_revenue_roi_breakdown_chart(
             f"or {_MAT_1_PLACEHOLDER!r}/{_MAT_PLACEHOLDER!r}."
         )
 
-    # Leave Column1 untouched. Only inject the year headers and the two total ROI values.
-    ws.cell(row=1, column=start_col, value=str(year_range.start_year))
-    ws.cell(row=1, column=end_col, value=str(year_range.end_year))
+    # Leave Column1 untouched. Keep the literal 'Total' prefix in the year headers.
+    ws.cell(row=1, column=start_col, value=f"Total {year_range.start_year}")
+    ws.cell(row=1, column=end_col, value=f"Total {year_range.end_year}")
     ws.cell(row=total_row, column=start_col, value=roi_values.mat_1_roi)
     ws.cell(row=total_row, column=end_col, value=roi_values.mat_roi)
 
     _save_chart_workbook(chart, workbook)
     _update_series_and_category_caches(chart, workbook)
+    return roi_values
 
 
 def _populate_net_revenue_roi_breakdown_slide(
@@ -129,11 +135,16 @@ def _populate_net_revenue_roi_breakdown_slide(
         start_year=year_range.start_year,
         end_year=year_range.end_year,
     )
-    _update_net_revenue_roi_breakdown_chart(
+    roi_values = _update_net_revenue_roi_breakdown_chart(
         slide,
         brand=brand,
         year_range=year_range,
         media_template_brand_df=media_template_brand_df,
+    )
+    _update_nr_roi_yoy_arrow(
+        slide,
+        mat_1_roi=float(roi_values.mat_1_roi or 0.0),
+        mat_roi=float(roi_values.mat_roi or 0.0),
     )
 
 
